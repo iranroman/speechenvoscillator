@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+import tensorflow_probability as tfp
 import sys 
 import tfgrfnn as tg
 import matplotlib.pyplot as plt
@@ -247,6 +248,14 @@ class Model():
 ##########################
 GrFNN = Model(layers=[layer1], stim=s)
 
+def correlation(x, y):    
+    mx = tf.math.reduce_mean(x)
+    my = tf.math.reduce_mean(y)
+    xm, ym = x-mx, y-my
+    r_num = tf.math.reduce_mean(tf.multiply(xm,ym))        
+    r_den = tf.math.reduce_std(xm) * tf.math.reduce_std(ym)
+    return r_num / r_den
+
 def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, stim_values, dtype):
     with tf.GradientTape() as tape:
         mse = tf.losses.MeanSquaredError()
@@ -259,23 +268,24 @@ def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_bet
         freqs = tf.transpose(freqs,(1,2,0))
         l_z = tf.squeeze(l_output_r,axis=1)
         cleaned = tf.multiply(l_z,mask)
-        curr_loss = mse(target, cleaned)
+        #curr_loss = mse(target, cleaned)
+        curr_loss = -tf.experimental.numpy.log10(correlation(target, cleaned))
     tf.print('==========================')
-    tf.print('MSE Loss: ', curr_loss)
+    tf.print('    Loss: ', curr_loss)
     tf.print('==========================')
-    var_list = [
-        layers_alpha, 
-        layers_beta1, 
-        layers_beta2, 
-        layers_delta, 
-        layers_cz, 
-        layers_cw, 
-        layers_cr, 
-        layers_w0
-    ]
-    grads = tape.gradient(curr_loss, var_list)
-    optim.apply_gradients(zip(grads, var_list))
-    return layers_states, cleaned, freqs, curr_loss
+    var_list = {
+        'alpha ':layers_alpha, 
+        'beta1 ': layers_beta1, 
+        'beta2 ': layers_beta2, 
+        'delta ': layers_delta, 
+        'cz ': layers_cz, 
+        'cw ': layers_cw, 
+        'cr ': layers_cr, 
+        'w0 ': layers_w0
+    }
+    grads = tape.gradient(curr_loss, list(var_list.values()))
+    optim.apply_gradients(zip(grads, list(var_list.values())))
+    return layers_states, cleaned, freqs, curr_loss, var_list
 
 
 @tf.function()
@@ -354,7 +364,7 @@ def get_model_variables_for_integration(Model, dtype=tf.float16):
 
     time = tf.cast(Model.time,dtype)
     stim_values = tf.cast(complex2concat(Model.stim.values,2),dtype)
-    layer_state = [tf.tile(tf.expand_dims(tf.cast(tf.concat([complex2concat(layer.initconds,0), layer.params["freqs"]],axis=0),dtype),axis=0),
+    layer_state = [tf.tile(tf.expand_dims(tf.cast(tf.concat([complex2concat(layer.initconds,0), [layer.params["w0"]/(2*np.pi)]],axis=0),dtype),axis=0),
                         tf.constant([Model.stim.ndatapoints.numpy(),1]))
                     for layer in Model.layers]
     layer_alpha = [tf.cast(layer.params['alpha'],dtype) for layer in Model.layers][0]
@@ -372,8 +382,9 @@ def get_model_variables_for_integration(Model, dtype=tf.float16):
 
 
 # let's integrate and train
-num_epochs = 1000
-lr = 0.001
+num_epochs = 10000
+lr = 1.0
+var_list_old = {}
 optim = tf.optimizers.Adam(lr)
 for e in range(num_epochs):
 
@@ -400,12 +411,13 @@ for e in range(num_epochs):
         #tf.print('-- batch: ', ibatch+1, ' (', num_batches, ')')
         batch_clean = clean_batches[int(ibatch*batch_size):int(batch_size+ibatch*batch_size)]
         batch_stim = stim_batches[int(ibatch*batch_size):int(batch_size+ibatch*batch_size)]
-        layers_states, cleaned, frq, loss = train_GrFNN(optim, batch_clean, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, batch_stim, tf.float32)
+        layers_states, cleaned, frq, loss, var_list = train_GrFNN(optim, batch_clean, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, batch_stim, tf.float32)
     plt.rcParams["figure.figsize"] = (20,10)
     plt.grid()
     plt.plot(GrFNN.time[:-1],np.squeeze(clean_batches[0]))
     plt.plot(GrFNN.time[:-1],np.squeeze(cleaned[0]))
     plt.plot(GrFNN.time[:-1],np.squeeze(frq[0]), '--')
-    plt.title('loss: '+str(loss.numpy()))
+    plt.title('loss: '+str(loss.numpy())+'   '+', '.join([k+"{:.3f}".format(v.numpy()) for k, v in var_list_old.items()]))
     plt.savefig("epoch"+str(e+1)+".png")
     plt.close()
+    var_list_old = var_list
