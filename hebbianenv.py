@@ -7,7 +7,7 @@ import os
 from scipy.signal import butter, lfilter
 
 fs = 100
-cutoff = 6
+cutoff = 10
 
 def butter_lowpass(cutoff, fs, order=5):
     nyq = 0.5 * fs
@@ -39,19 +39,19 @@ all_envelopes = [np.diff(butter_lowpass_filter(np.squeeze(np.array(env)),cutoff,
 #all_envelopes = [smooth(np.squeeze(np.array(env)),11) for env in all_envelopes]
 max_len = len(max(all_envelopes,key=len))+1
 all_envelopes = np.array([np.pad(np.squeeze(env),(0,max_len-len(env))) for env in all_envelopes])
-mask = np.ma.masked_where(all_envelopes[:,1:] != 0.0, all_envelopes[:,1:]).mask.astype(np.float32)
-all_envelopes = (all_envelopes-np.expand_dims(np.mean(all_envelopes, axis=1),-1))/np.expand_dims(np.std(all_envelopes, axis=1),-1)
+mask = np.ma.masked_where(all_envelopes[[0],1:] != 0.0, all_envelopes[[0],1:]).mask.astype(np.float32)
+all_envelopes = (all_envelopes-np.expand_dims(np.mean(all_envelopes, axis=1),-1))/np.expand_dims(np.std(all_envelopes, axis=1),-1)/4
 ndatapoints = len(all_envelopes)
 batch_size = int(ndatapoints/num_batches)
 
 # stimulus values
 nchannels = 1 
-stim_values = all_envelopes[:,:,np.newaxis]
+stim_values = all_envelopes[[0],:,np.newaxis]
 stim_values = tf.convert_to_tensor(stim_values, dtype=tf.float32) 
 stim_values = tf.complex(stim_values, tf.zeros_like(stim_values))
 
 # target values
-clean_values = tf.convert_to_tensor(all_envelopes[:,1:], dtype=tf.float32)
+clean_values = tf.convert_to_tensor(all_envelopes[[0],1:], dtype=tf.float32)
 
 ##############################
 # define the stimulus object #
@@ -168,8 +168,7 @@ layer1 = connect(source=s, target=layer1,
 ###########################
 # ODE function definition #
 ###########################
-def xdot_ydot(t, x_y, alpha, beta1, beta2, delta, epsilon, w0, cz, cw, cr,
-                connmats_state, sources_state, conns_weight, dtype=tf.float32):
+def xdot_ydot(t, x_y, alpha, beta1, beta2, delta, cz, cw, cr, w0, epsilon, sources_state, dtype=tf.float32):
 
     # keep some parameters always positive
     omega = tf.constant(2*np.pi, dtype=dtype)
@@ -248,11 +247,11 @@ class Model():
 ##########################
 GrFNN = Model(layers=[layer1], stim=s)
 
-def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, layers_connmats, layers_conns_weight, zfun, stim_values, dtype):
+def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, stim_values, dtype):
     with tf.GradientTape() as tape:
         mse = tf.losses.MeanSquaredError()
         # keep some parameters always positive
-        layers_states = Runge_Kutta_4(time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, layers_connmats, layers_conns_weight, zfun, stim_values, dtype)
+        layers_states = Runge_Kutta_4(time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, stim_values, dtype)
 
         l_output_r, l_output_i, freqs = tf.split(layers_states[0],3,axis=2) 
         l_output_r = tf.transpose(l_output_r,(1,2,0))
@@ -264,16 +263,24 @@ def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_bet
     tf.print('==========================')
     tf.print('MSE Loss: ', curr_loss)
     tf.print('==========================')
-    grads = tape.gradient(curr_loss, [layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0
-                                        ])
-    optim.apply_gradients(zip(grads, [layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0
-                                        ]))
-    return layers_states, cleaned, freqs
+    var_list = [
+        layers_alpha, 
+        layers_beta1, 
+        layers_beta2, 
+        layers_delta, 
+        layers_cz, 
+        layers_cw, 
+        layers_cr, 
+        layers_w0
+    ]
+    grads = tape.gradient(curr_loss, var_list)
+    optim.apply_gradients(zip(grads, var_list))
+    return layers_states, cleaned, freqs, curr_loss
 
 
 @tf.function()
-def train_GrFNN(optim, target, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, layers_connmats, layers_conns_weight, zfun, stim_values, dtype):
-    layers_states = train_step(optim, target, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, layers_connmats, layers_conns_weight, zfun, stim_values, dtype)
+def train_GrFNN(optim, target, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, stim_values, dtype):
+    layers_states = train_step(optim, target, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, stim_values, dtype)
     return layers_states
 
 ##########
@@ -282,13 +289,13 @@ def train_GrFNN(optim, target, mask, time, layers_state, layers_alpha, layers_be
 def complex2concat(x, axis):
     return tf.concat([tf.math.real(x),tf.math.imag(x)],axis=axis)
 def Runge_Kutta_4(time, layers_state, layers_alpha, layers_beta1,
-                layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, layers_connmats, layers_conns_weight, zfun, stim_values, dtype=tf.float16):
+                layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, stim_values, dtype=tf.float16):
 
     def scan_fn(layers_state, time_dts_stim):
 
         def get_next_k(time_val, layers_state):
 
-            layers_k = [zfun(time_val, layer_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, layers_connmats, layers_state, layers_conns_weight, dtype)
+            layers_k = [zfun(time_val, layer_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, layers_state, dtype)
                 for layer_state in layers_state[1:]]
 
             return layers_k
@@ -359,16 +366,14 @@ def get_model_variables_for_integration(Model, dtype=tf.float16):
     layer_cr = [tf.cast(layer.params['cr'],dtype) for layer in Model.layers][0]
     layer_w0 = [tf.cast(layer.params['w0'],dtype) for layer in Model.layers][0]
     layer_epsilon = [tf.cast(layer.params['epsilon'],dtype) for layer in Model.layers][0]
-    layer_conn_weight = tf.cast(Model.layers[0].connections[0].params['weight'],dtype)
-    layer_connmats = tf.cast(complex2concat(Model.layers[0].connections[0].matrixinit,0),dtype)
     zfun = Model.zfun
 
-    return layer_state, layer_alpha, layer_beta1, layer_beta2, layer_delta, layer_cz, layer_cw, layer_cr, layer_w0, layer_epsilon, layer_connmats, layer_conn_weight, zfun, stim_values, time
+    return layer_state, layer_alpha, layer_beta1, layer_beta2, layer_delta, layer_cz, layer_cw, layer_cr, layer_w0, layer_epsilon, zfun, stim_values, time
 
 
 # let's integrate and train
 num_epochs = 1000
-lr = 0.01
+lr = 0.001
 optim = tf.optimizers.Adam(lr)
 for e in range(num_epochs):
 
@@ -377,7 +382,7 @@ for e in range(num_epochs):
     print("Epoch: ", e+1)
     print('--------------------------')
     # get variables for integration
-    layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, layers_connmats, layers_conns_weight, zfun, input_values, time = get_model_variables_for_integration(GrFNN, tf.float32)
+    layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, input_values, time = get_model_variables_for_integration(GrFNN, tf.float32)
 
     #rand_idx = np.random.choice(ndatapoints,ndatapoints,replace=False)
     clean_batches = clean_values
@@ -395,11 +400,12 @@ for e in range(num_epochs):
         #tf.print('-- batch: ', ibatch+1, ' (', num_batches, ')')
         batch_clean = clean_batches[int(ibatch*batch_size):int(batch_size+ibatch*batch_size)]
         batch_stim = stim_batches[int(ibatch*batch_size):int(batch_size+ibatch*batch_size)]
-        layers_states, cleaned, frq = train_GrFNN(optim, batch_clean, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, layers_connmats, layers_conns_weight, zfun, batch_stim, tf.float32)
-        plt.rcParams["figure.figsize"] = (20,10)
-        plt.grid()
-        plt.plot(GrFNN.time[:-1],np.squeeze(clean_batches[0]))
-        plt.plot(GrFNN.time[:-1],np.squeeze(cleaned[0]))
-        plt.plot(GrFNN.time[:-1],np.squeeze(frq[0]), '--')
-        plt.savefig("epoch"+str(e+1)+".png")
-        plt.close()
+        layers_states, cleaned, frq, loss = train_GrFNN(optim, batch_clean, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, batch_stim, tf.float32)
+    plt.rcParams["figure.figsize"] = (20,10)
+    plt.grid()
+    plt.plot(GrFNN.time[:-1],np.squeeze(clean_batches[0]))
+    plt.plot(GrFNN.time[:-1],np.squeeze(cleaned[0]))
+    plt.plot(GrFNN.time[:-1],np.squeeze(frq[0]), '--')
+    plt.title('loss: '+str(loss.numpy()))
+    plt.savefig("epoch"+str(e+1)+".png")
+    plt.close()
