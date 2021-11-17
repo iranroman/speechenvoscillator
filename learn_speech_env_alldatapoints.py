@@ -120,14 +120,14 @@ extra_vars = [W1,W2,W3,b1,b2,b3]
 
 # oscillator parameters and initial conditions
 initconds = tf.constant(0.1+1j*0.0, dtype=tf.complex64, shape=(N,))
-l_params_dict = {'alpha':tf.Variable(0.01, dtype=tf.float32),
-             'beta1':tf.Variable(-0.25, dtype=tf.float32),
-             'beta2':tf.Variable(-0.25, dtype=tf.float32),
-             'delta':tf.Variable(0.01, dtype=tf.float32),
-             'cz': tf.Variable(1.0, dtype=tf.float32),
-             'cw': tf.Variable(1.0, dtype=tf.float32),
-             'cr': tf.Variable(0.1, dtype=tf.float32),
-             'w0': tf.Variable(4.5*2*np.pi, dtype=tf.float32),
+l_params_dict = {'alpha':tf.constant(0.01, dtype=tf.float32),
+             'beta1':tf.constant(-0.25, dtype=tf.float32),
+             'beta2':tf.constant(-0.25, dtype=tf.float32),
+             'delta':tf.constant(0.01, dtype=tf.float32),
+             'cz': tf.constant(1.0, dtype=tf.float32),
+             'cw': tf.constant(1.0, dtype=tf.float32),
+             'cr': tf.constant(0.1, dtype=tf.float32),
+             'w0': tf.constant(4.5*2*np.pi, dtype=tf.float32),
              'epsilon':tf.constant(1.0, dtype=tf.float32)}
 
 ################
@@ -276,16 +276,16 @@ def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_bet
         h3 = tf.multiply(wa,tf.add(tf.matmul(h2,W3),b3))
         h3 = tf.reduce_mean(h3,axis=0)
         alpha_nn, beta1_nn, beta2_nn, delta_nn, cz_nn, cw_nn, cr_nn, w0_nn = tf.unstack(h3)
-        layers_alpha = tf.add(layers_alpha,alpha_nn)
-        layers_beta1 = tf.add(layers_beta1,beta1_nn)
-        layers_beta2 = tf.add(layers_beta2,beta2_nn)
-        layers_delta = tf.add(layers_delta,delta_nn)
-        layers_cz = tf.add(layers_cz,cz_nn)
-        layers_cw = tf.add(layers_cw,cw_nn)
-        layers_cr = tf.add(layers_cr,cr_nn)
-        layers_w0 = tf.add(layers_w0,w0_nn)
+        layers_alpha_ = tf.add(layers_alpha,alpha_nn)
+        layers_beta1_ = tf.add(layers_beta1,beta1_nn)
+        layers_beta2_ = tf.add(layers_beta2,beta2_nn)
+        layers_delta_ = tf.add(layers_delta,delta_nn)
+        layers_cz_ = tf.add(layers_cz,cz_nn)
+        layers_cw_ = tf.add(layers_cw,cw_nn)
+        layers_cr_ = tf.add(layers_cr,cr_nn)
+        layers_w0_ = tf.add(layers_w0,w0_nn)
         # keep some parameters always positive
-        layers_states = Runge_Kutta_4(time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, stim_values, dtype)
+        layers_states = Runge_Kutta_4(time, layers_state, layers_alpha_, layers_beta1_, layers_beta2_, layers_delta_, layers_cz_, layers_cw_, layers_cr_, layers_w0_, layers_epsilon, zfun, stim_values, dtype)
 
         l_output_r, l_output_i, freqs = tf.split(layers_states[0],3,axis=2) 
         l_output_r = tf.transpose(l_output_r,(1,2,0))
