@@ -7,7 +7,8 @@ import os
 import scipy.io
 from scipy.signal import butter, lfilter
 
-lr = 0.00001
+lr = 0.0001
+wa = 1.0
 
 fs = 100
 cutoff = 10
@@ -107,6 +108,15 @@ Noctaves = np.log2(fhigh/flow)
 Noscperoct = 12
 N = int(Noscperoct*Noctaves+1)
 #w0 = tf.Variable(2*np.pi*np.logspace(np.log10(flow), np.log10(fhigh),N), dtype=tf.float32)
+
+W1 = tf.Variable(tf.initializers.HeNormal()(shape=(all_envelopes.shape[1]*2,512)))
+b1 = tf.Variable(tf.initializers.Constant(0.0)(shape=(512,)))
+W2 = tf.Variable(tf.initializers.HeNormal()(shape=(512,128)))
+b2 = tf.Variable(tf.initializers.Constant(0.0)(shape=(128,)))
+W3 = tf.Variable(tf.initializers.HeNormal()(shape=(128,8)))
+b3 = tf.Variable(tf.initializers.Constant(0.0)(shape=(8,)))
+
+extra_vars = [W1,W2,W3,b1,b2,b3]
 
 # oscillator parameters and initial conditions
 initconds = tf.constant(0.1+1j*0.0, dtype=tf.complex64, shape=(N,))
@@ -256,11 +266,24 @@ def correlation(x, y, axis=1):
     xm, ym = x-mx, y-my
     r_num = tf.math.reduce_mean(tf.multiply(xm,ym),axis=axis,keepdims=True) 
     r_den = tf.math.reduce_std(xm,axis=axis,keepdims=True) * tf.math.reduce_std(ym,axis=axis,keepdims=True)
-    return 1e-20 + 0.5 + (r_num / r_den)/2
+    return 0.5 + (r_num / r_den)/2
 
 def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, stim_values, dtype):
     with tf.GradientTape() as tape:
         mse = tf.losses.MeanSquaredError()
+        h1 = tf.nn.relu(tf.add(tf.matmul(tf.reshape(stim_values,[54,-1]),W1),b1))
+        h2 = tf.nn.relu(tf.add(tf.matmul(h1,W2),b2))
+        h3 = tf.multiply(wa,tf.add(tf.matmul(h2,W3),b3))
+        h3 = tf.reduce_mean(h3,axis=0)
+        alpha_nn, beta1_nn, beta2_nn, delta_nn, cz_nn, cw_nn, cr_nn, w0_nn = tf.unstack(h3)
+        layers_alpha = tf.add(layers_alpha,alpha_nn)
+        layers_beta1 = tf.add(layers_beta1,beta1_nn)
+        layers_beta2 = tf.add(layers_beta2,beta2_nn)
+        layers_delta = tf.add(layers_delta,delta_nn)
+        layers_cz = tf.add(layers_cz,cz_nn)
+        layers_cw = tf.add(layers_cw,cw_nn)
+        layers_cr = tf.add(layers_cr,cr_nn)
+        layers_w0 = tf.add(layers_w0,w0_nn)
         # keep some parameters always positive
         layers_states = Runge_Kutta_4(time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, stim_values, dtype)
 
@@ -285,9 +308,9 @@ def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_bet
         'cr ': layers_cr, 
         'w0 ': layers_w0
     }
-    grads = tape.gradient(curr_loss, list(var_list.values()))
-    optim.apply_gradients(zip(grads, list(var_list.values())))
-    return layers_states, cleaned, freqs, curr_loss, var_list
+    grads = tape.gradient(curr_loss, extra_vars)
+    optim.apply_gradients(zip(grads, extra_vars))
+    return layers_states, cleaned, freqs, curr_loss, var_list, tf.unstack(h3)
 
 
 @tf.function()
@@ -399,20 +422,20 @@ for e in range(num_epochs):
     #rand_idx = np.random.choice(ndatapoints,ndatapoints,replace=False)
     clean_batches = clean_values
     stim_batches = input_values
-    print('alpha:    ', layers_alpha.numpy())
-    print('beta1:    ', layers_beta1.numpy())
-    print('beta2:    ', layers_beta2.numpy())
-    print('delta:    ', layers_delta.numpy())
-    print('cz:       ', layers_cz.numpy())
-    print('cw:       ', layers_cw.numpy())
-    print('cr:       ', layers_cr.numpy())
-    print('w0:       ', layers_w0.numpy())
-    print('w0/(2*pi):', layers_w0.numpy()/(2*np.pi))
     for ibatch in range(num_batches):
         #tf.print('-- batch: ', ibatch+1, ' (', num_batches, ')')
         batch_clean = clean_batches[int(ibatch*batch_size):int(batch_size+ibatch*batch_size)]
         batch_stim = stim_batches[int(ibatch*batch_size):int(batch_size+ibatch*batch_size)]
-        layers_states, cleaned, frq, loss, var_list = train_GrFNN(optim, batch_clean, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, batch_stim, tf.float32)
+        layers_states, cleaned, frq, loss, var_list, extra_vars = train_GrFNN(optim, batch_clean, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, batch_stim, tf.float32)
+    print('alpha:    ', layers_alpha.numpy()+extra_vars[0].numpy())
+    print('beta1:    ', layers_beta1.numpy()+extra_vars[1].numpy())
+    print('beta2:    ', layers_beta2.numpy()+extra_vars[2].numpy())
+    print('delta:    ', layers_delta.numpy()+extra_vars[3].numpy())
+    print('cz:       ', layers_cz.numpy()+extra_vars[4].numpy())
+    print('cw:       ', layers_cw.numpy()+extra_vars[5].numpy())
+    print('cr:       ', layers_cr.numpy()+extra_vars[6].numpy())
+    print('w0:       ', layers_w0.numpy()+extra_vars[7].numpy())
+    print('w0/(2*pi):', (layers_w0.numpy()+extra_vars[7].numpy())/(2*np.pi))
     plt.rcParams["figure.figsize"] = (20,10)
     plt.grid()
     plt.plot(GrFNN.time[:-1],np.squeeze(clean_batches[0]))
