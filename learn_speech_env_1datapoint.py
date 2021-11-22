@@ -5,9 +5,9 @@ import sys
 import matplotlib.pyplot as plt
 import os
 import scipy.io
-from scipy.signal import butter, lfilter
+from scipy.signal import butter, lfilter, hilbert
 
-lr = 1.0
+lr = 1.5
 
 fs = 100
 cutoff = 10
@@ -53,8 +53,8 @@ stim_values = tf.convert_to_tensor(stim_values, dtype=tf.float32)
 stim_values = tf.complex(stim_values, tf.zeros_like(stim_values))
 
 # declare the model's target values
-#clean_values = tf.convert_to_tensor(eeg[[0],1:], dtype=tf.float32)
-clean_values = tf.convert_to_tensor(all_envelopes[[0],1:], dtype=tf.float32)
+clean_values = np.cos(np.angle(hilbert(all_envelopes[[0],1:],axis=1)))
+clean_values = tf.convert_to_tensor(clean_values, dtype=tf.float32)
 
 ##############################
 # define the stimulus object #
@@ -267,8 +267,10 @@ def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_bet
         l_output_r, l_output_i, freqs = tf.split(layers_states[0],3,axis=2) 
         l_output_r = tf.transpose(l_output_r,(1,2,0))
         l_output_i = tf.transpose(l_output_i,(1,2,0))
+        l_z = tf.complex(l_output_r,l_output_i)
+        l_z = tf.cos(tf.math.angle(l_z))
         freqs = tf.transpose(freqs,(1,2,0))
-        l_z = tf.squeeze(l_output_r,axis=1)
+        l_z = tf.squeeze(l_z,axis=1)
         cleaned = tf.multiply(l_z,mask)
         #curr_loss = mse(target, cleaned)
         curr_loss = tf.reduce_mean(-tf.math.log(correlation(target, cleaned)))
@@ -287,7 +289,7 @@ def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_bet
     }
     grads = tape.gradient(curr_loss, list(var_list.values()))
     optim.apply_gradients(zip(grads, list(var_list.values())))
-    return layers_states, cleaned, freqs, curr_loss, var_list
+    return layers_states, tf.squeeze(l_output_r,axis=1), freqs, curr_loss, var_list
 
 
 @tf.function()
@@ -415,7 +417,7 @@ for e in range(num_epochs):
         layers_states, cleaned, frq, loss, var_list = train_GrFNN(optim, batch_clean, mask, time, layers_state, layers_alpha, layers_beta1, layers_beta2, layers_delta, layers_cz, layers_cw, layers_cr, layers_w0, layers_epsilon, zfun, batch_stim, tf.float32)
     plt.rcParams["figure.figsize"] = (20,10)
     plt.grid()
-    plt.plot(GrFNN.time[:-1],np.squeeze(clean_batches[0]))
+    plt.plot(GrFNN.time[:-1],np.squeeze(all_envelopes[[0],1:]))
     plt.plot(GrFNN.time[:-1],np.squeeze(cleaned[0]))
     plt.plot(GrFNN.time[:-1],np.squeeze(frq[0]), '--')
     plt.title('loss: '+str(loss.numpy())+'   '+', '.join([k+"{:.3f}".format(v.numpy()) for k, v in var_list_old.items()]))

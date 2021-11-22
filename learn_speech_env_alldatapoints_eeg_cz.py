@@ -7,7 +7,7 @@ import os
 import scipy.io
 from scipy.signal import butter, lfilter, hilbert
 
-lr = 1.0
+lr = 0.01
 
 fs = 100
 cutoff = 10
@@ -22,7 +22,7 @@ def butter_lowpass_filter(data, cutoff, fs, order=5):
     return y
 
 # Load the mat file
-data = scipy.io.loadmat('data/28S_R.mat')
+data = scipy.io.loadmat('data/44S_R.mat')
 
 # preprocess the speech envelopes
 all_envelopes = list(np.squeeze(data['S']))
@@ -42,7 +42,7 @@ batch_size = int(ndatapoints/num_batches)
 # preprocess the EEG data
 eeg = data['R_zscore']
 #eeg = data['R']
-eeg = [np.mean(np.squeeze(x), axis=1) for x in eeg[0]]
+eeg = [x[:,47] for x in eeg[0]]
 eeg = np.array([np.pad(np.squeeze(env),(0,max_len-len(env))) for env in eeg])
 eeg = (eeg-np.expand_dims(np.mean(eeg, axis=1),-1))/np.expand_dims(np.std(eeg, axis=1),-1)/4
 
@@ -53,7 +53,7 @@ stim_values = tf.convert_to_tensor(stim_values, dtype=tf.float32)
 stim_values = tf.complex(stim_values, tf.zeros_like(stim_values))
 
 # declare the model's target values
-clean_values = np.cos(np.angle(hilbert(all_envelopes[:,1:],axis=1)))
+clean_values = np.cos(np.angle(hilbert(eeg[:,1:],axis=1)))
 clean_values = tf.convert_to_tensor(clean_values, dtype=tf.float32)
 
 ##############################
@@ -111,7 +111,7 @@ N = int(Noscperoct*Noctaves+1)
 # oscillator parameters and initial conditions
 initconds = tf.constant(0.1+1j*0.0, dtype=tf.complex64, shape=(N,))
 l_params_dict = {
-             #'alpha':tf.constant(0.01, dtype=tf.float32),
+             #'alpha':tf.Variable(0.01, dtype=tf.float32),
              'alpha':tf.Variable(0.01, dtype=tf.float32, constraint=lambda z: tf.clip_by_value(z,0.01,np.inf)),
              'beta1':tf.Variable(-0.25, dtype=tf.float32),
              'beta2':tf.Variable(-0.25, dtype=tf.float32),
@@ -388,7 +388,7 @@ def get_model_variables_for_integration(Model, dtype=tf.float16):
 
 
 # let's integrate and train
-num_epochs = 6
+num_epochs = 100
 var_list_old = {}
 optim = tf.optimizers.Adam(lr)
 for e in range(num_epochs):
@@ -426,4 +426,4 @@ for e in range(num_epochs):
     plt.savefig("epoch"+str(e+1)+".png")
     plt.close()
     var_list_old = var_list
-    np.save('env.npy',cleaned.numpy())
+    np.save('eeg.npy',cleaned.numpy())
