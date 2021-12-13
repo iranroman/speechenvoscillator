@@ -6,8 +6,13 @@ import matplotlib.pyplot as plt
 import os
 import scipy.io
 from scipy.signal import butter, lfilter, hilbert
+from scipy.stats.stats import pearsonr
 
-lr = 1.0
+gpus = tf.config.experimental.list_physical_devices('GPU')
+for gpu in gpus:
+    tf.config.experimental.set_memory_growth(gpu, True)
+
+lr = 0.25
 
 fs = 100
 cutoff = 10
@@ -29,10 +34,9 @@ all_envelopes = list(np.squeeze(data['S']))
 all_envelopes = [np.diff(butter_lowpass_filter(np.squeeze(np.array(env)),cutoff,fs), axis=0) for env in all_envelopes]
 max_len = len(max(all_envelopes,key=len))+1
 all_envelopes = np.array([np.pad(np.squeeze(env),(0,max_len-len(env))) for env in all_envelopes])
-all_envelopes = (all_envelopes-np.expand_dims(np.mean(all_envelopes, axis=1),-1))/np.expand_dims(np.std(all_envelopes, axis=1),-1)/4
-
 # create a mask to apply to the model's output
 mask = np.ma.masked_where(all_envelopes[:,1:] != 0.0, all_envelopes[:,1:]).mask.astype(np.float32)
+all_envelopes = (all_envelopes-np.expand_dims(np.mean(all_envelopes, axis=1),-1))/np.expand_dims(np.std(all_envelopes, axis=1),-1)/4
 
 # input data dimensionality parameters
 ndatapoints = len(all_envelopes)
@@ -53,8 +57,8 @@ stim_values = tf.convert_to_tensor(stim_values, dtype=tf.float32)
 stim_values = tf.complex(stim_values, tf.zeros_like(stim_values))
 
 # declare the model's target values
-clean_values = np.cos(np.angle(hilbert(all_envelopes[:,1:],axis=1)))
-clean_values = tf.convert_to_tensor(clean_values, dtype=tf.float32)
+#clean_values = np.cos(np.angle(hilbert(all_envelopes[:,1:],axis=1)))
+clean_values = tf.convert_to_tensor(all_envelopes[:,1:], dtype=tf.float32)
 
 ##############################
 # define the stimulus object #
@@ -110,9 +114,7 @@ N = int(Noscperoct*Noctaves+1)
 
 # oscillator parameters and initial conditions
 initconds = tf.constant(0.1+1j*0.0, dtype=tf.complex64, shape=(N,))
-l_params_dict = {
-             #'alpha':tf.constant(0.01, dtype=tf.float32),
-             'alpha':tf.Variable(0.01, dtype=tf.float32, constraint=lambda z: tf.clip_by_value(z,0.01,np.inf)),
+l_params_dict = {'alpha':tf.Variable(0.01, dtype=tf.float32),
              'beta1':tf.Variable(-0.25, dtype=tf.float32),
              'beta2':tf.Variable(-0.25, dtype=tf.float32),
              'delta':tf.Variable(0.01, dtype=tf.float32),
@@ -269,10 +271,10 @@ def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_bet
         l_output_r, l_output_i, freqs = tf.split(layers_states[0],3,axis=2) 
         l_output_r = tf.transpose(l_output_r,(1,2,0))
         l_output_i = tf.transpose(l_output_i,(1,2,0))
-        l_z = tf.complex(l_output_r,l_output_i)
-        l_z = tf.cos(tf.math.angle(l_z))
+        #l_z = tf.complex(l_output_r,l_output_i)
+        #l_z = tf.cos(tf.math.angle(l_z))
         freqs = tf.transpose(freqs,(1,2,0))
-        l_z = tf.squeeze(l_z,axis=1)
+        l_z = tf.squeeze(l_output_r,axis=1)
         cleaned = tf.multiply(l_z,mask)
         #curr_loss = mse(target, cleaned)
         curr_loss = tf.reduce_mean(-tf.math.log(correlation(target, cleaned)))
@@ -291,7 +293,7 @@ def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_bet
     }
     grads = tape.gradient(curr_loss, list(var_list.values()))
     optim.apply_gradients(zip(grads, list(var_list.values())))
-    return layers_states, tf.squeeze(l_output_r,axis=1), freqs, curr_loss, var_list
+    return layers_states, cleaned, freqs, curr_loss, var_list
 
 
 @tf.function()
@@ -386,9 +388,17 @@ def get_model_variables_for_integration(Model, dtype=tf.float16):
 
     return layer_state, layer_alpha, layer_beta1, layer_beta2, layer_delta, layer_cz, layer_cw, layer_cr, layer_w0, layer_epsilon, zfun, stim_values, time
 
+def correlation_numpy(x, y, axis=1):    
+    return [pearsonr(i,j)[0] for i,j in zip(x,y)]
+#    mx = np.mean(x,axis=axis,keepdims=True)
+#    my = np.mean(y,axis=axis,keepdims=True)
+#    xm, ym = x-mx, y-my
+#    r_num = np.mean(tf.multiply(xm,ym),axis=axis,keepdims=True) 
+#    r_den = np.std(xm,axis=axis,keepdims=True) * np.std(ym,axis=axis,keepdims=True)
+#    return r_num / r_den
 
 # let's integrate and train
-num_epochs = 6
+num_epochs = 7
 var_list_old = {}
 optim = tf.optimizers.Adam(lr)
 for e in range(num_epochs):
@@ -422,8 +432,9 @@ for e in range(num_epochs):
     plt.plot(GrFNN.time[:-1],np.squeeze(all_envelopes[[0],1:]))
     plt.plot(GrFNN.time[:-1],np.squeeze(cleaned[0]))
     plt.plot(GrFNN.time[:-1],np.squeeze(frq[0]), '--')
-    plt.title('loss: '+str(loss.numpy())+'   '+', '.join([k+"{:.3f}".format(v.numpy()) for k, v in var_list_old.items()]))
+    plt.title('corr: '+"{:.4f}".format(np.mean(correlation_numpy(all_envelopes[:,1:],cleaned.numpy())))+', loss: '+"{:.4f}".format(loss.numpy())+'   '+', '.join([k+"{:.3f}".format(v.numpy()) for k, v in var_list_old.items()]))
     plt.savefig("epoch"+str(e+1)+".png")
     plt.close()
     var_list_old = var_list
-    np.save('env.npy',cleaned.numpy())
+    np.save('envelopes.npy',all_envelopes)
+    np.save('model_output.npy',cleaned)
