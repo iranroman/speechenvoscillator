@@ -12,7 +12,7 @@ gpus = tf.config.experimental.list_physical_devices('GPU')
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
 
-lr = 0.01
+lr = 0.1
 
 fs = 100
 cutoff = 10
@@ -77,9 +77,9 @@ scat_mat = np.load('W.npy')
 scat_b = np.load('b.npy')
 eeg_hb = np.cos(np.angle(hilbert(eeg, axis=1)))
 clean_values = tf.convert_to_tensor(eeg_hb[[0],lag+1:,np.newaxis], dtype=tf.float32)
-clean_values = tf.add(tf.matmul(clean_values,scat_mat),scat_b)
-cond = tf.equal(clean_values, tf.reduce_max(clean_values,axis=-1,keepdims=True))
-clean_values = tf.where(cond, 1, tf.zeros_like(clean_values))
+#clean_values = tf.add(tf.matmul(clean_values,scat_mat),scat_b)
+#cond = tf.equal(clean_values, tf.reduce_max(clean_values,axis=-1,keepdims=True))
+#clean_values = tf.where(cond, 1, tf.zeros_like(clean_values))
 #np.set_printoptions(threshold=sys.maxsize)
 
 ##############################
@@ -138,14 +138,14 @@ N = int(Noscperoct*Noctaves+1)
 initconds = tf.constant(0.1+1j*0.0, dtype=tf.complex64, shape=(N,))
 l_params_dict = {
              #'alpha':tf.Variable(0.01, dtype=tf.float32),
-             'alpha':tf.Variable(0.01, dtype=tf.float32, constraint=lambda z: tf.clip_by_value(z,0.00,np.inf)),
-             'beta1':tf.Variable(-0.25, dtype=tf.float32),
-             'beta2':tf.Variable(-0.25, dtype=tf.float32),
-             'delta':tf.Variable(0.01, dtype=tf.float32),
+             'alpha':tf.Variable(1.0, dtype=tf.float32, constraint=lambda z: tf.clip_by_value(z,0.00,np.inf)),
+             'beta1':tf.Variable(-10.0, dtype=tf.float32, constraint=lambda z: tf.clip_by_value(z,-np.inf,0.0)),
+             'beta2':tf.constant(0.0, dtype=tf.float32),
+             'delta':tf.constant(0.0, dtype=tf.float32),
              'cz': tf.Variable(1.0, dtype=tf.float32),
              'cw': tf.Variable(1.0, dtype=tf.float32),
              'cr': tf.Variable(0.1, dtype=tf.float32, constraint=lambda z: tf.clip_by_value(z,0.0,np.inf)),
-             'w0': tf.Variable(4.5*2*np.pi, dtype=tf.float32),
+             'w0': tf.Variable(5.0*2*np.pi, dtype=tf.float32),
              'epsilon':tf.constant(1.0, dtype=tf.float32)}
 
 ################
@@ -300,18 +300,18 @@ def train_step(optim, target, mask, time, layers_state, layers_alpha, layers_bet
         cleaned = tf.complex(l_output_r,l_output_i)
         cleaned = tf.cos(tf.math.angle(cleaned))
         cleaned = tf.multiply(cleaned,tf.expand_dims(mask,axis=-1))
-        scores = tf.add(tf.matmul(cleaned,scat_mat),scat_b)
-        curr_loss = CE(target,scores)
+        #scores = tf.add(tf.matmul(cleaned,scat_mat),scat_b)
+        #curr_loss = CE(target,scores)
         #curr_loss = mse(target, cleaned)
-        #curr_loss = tf.reduce_mean(-tf.math.log(correlation(target, cleaned)))
+        curr_loss = tf.reduce_mean(-tf.math.log(correlation(target, cleaned)))
     tf.print('==========================')
     tf.print('    Loss: ', curr_loss)
     tf.print('==========================')
     var_list = {
         'alpha ':layers_alpha, 
         'beta1 ': layers_beta1, 
-        'beta2 ': layers_beta2, 
-        'delta ': layers_delta, 
+        #'beta2 ': layers_beta2, 
+        #'delta ': layers_delta, 
         'cz ': layers_cz, 
         'cw ': layers_cw, 
         'cr ': layers_cr, 
@@ -426,7 +426,7 @@ def correlation_numpy(x, y, axis=1):
 
 
 # let's integrate and train
-num_epochs = 1000
+num_epochs = 100
 var_list_old = {}
 optim = tf.optimizers.Adam(lr)
 best_corr = -1
